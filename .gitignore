@@ -1,0 +1,54 @@
+# Mini-Cosmos .gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+
+# Data (не коммитим большие файлы)
+data/raw/
+data/processed/
+data/external/
+*.png
+*.jpg
+*.jpeg
+*.mp4
+*.avi
+*.gif
+
+# Model checkpoints
+outputs/checkpoints/
+outputs/predictions/
+*.ckpt
+*.pth
+*.pt
+
+# Logs
+outputs/logs/
+*.log
+wandb/
+lightning_logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Misc
+*.zip
+*.tar.gz
+.env
