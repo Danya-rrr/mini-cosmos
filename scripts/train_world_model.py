@@ -4,7 +4,8 @@ Mini-Cosmos: World Model Training Script
 Train the World Model to predict future latent frames.
 
 Usage:
-    python scripts/train_world_model.py --epochs 30 --batch_size 8
+    python scripts/train_world_model.py --epochs 30 --batch_size 8 --amp
+    python scripts/train_world_model.py --epochs 30 --batch_size 8 --amp --latent_dim 8
 
 Requirements:
     - Trained VAE checkpoint (outputs/checkpoints/vae_best.pt)
@@ -299,17 +300,17 @@ class WorldModelTrainer:
         
         for i in range(num_samples):
             # Last context frame
-            axes[0, i].imshow(last_context_recon[i].permute(1, 2, 0).cpu().clamp(0, 1).numpy())
+            axes[0, i].imshow(last_context_recon[i].permute(1, 2, 0).cpu().clamp(0, 1).float().numpy())
             axes[0, i].set_title('Last Context')
             axes[0, i].axis('off')
             
             # Target (ground truth next frame)
-            axes[1, i].imshow(target_recon[i].permute(1, 2, 0).cpu().clamp(0, 1).numpy())
+            axes[1, i].imshow(target_recon[i].permute(1, 2, 0).cpu().clamp(0, 1).float().numpy())
             axes[1, i].set_title('Target (GT)')
             axes[1, i].axis('off')
             
             # Prediction
-            axes[2, i].imshow(pred_recon[i].permute(1, 2, 0).cpu().clamp(0, 1).numpy())
+            axes[2, i].imshow(pred_recon[i].permute(1, 2, 0).cpu().clamp(0, 1).float().numpy())
             axes[2, i].set_title('Prediction')
             axes[2, i].axis('off')
         
@@ -433,6 +434,8 @@ def main():
     parser.add_argument('--num_workers', type=int, default=4)
     
     # Model
+    parser.add_argument('--latent_dim', type=int, default=4,
+                        help='Latent dimension (must match VAE)')
     parser.add_argument('--context_length', type=int, default=8)
     parser.add_argument('--hidden_dim', type=int, default=512)
     parser.add_argument('--num_layers', type=int, default=6)
@@ -468,7 +471,7 @@ def main():
     
     vae_config = VAEConfig(
         in_channels=3,
-        latent_dim=4,
+        latent_dim=args.latent_dim,
         hidden_dims=(64, 128, 256, 256)
     )
     vae = VAE(vae_config)
@@ -501,7 +504,7 @@ def main():
     
     # Create World Model
     wm_config = WorldModelConfig(
-        latent_dim=4,
+        latent_dim=args.latent_dim,
         latent_size=32,
         context_length=args.context_length,
         action_dim=3,
