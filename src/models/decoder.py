@@ -6,6 +6,8 @@ Decodes latent representations back to images.
 Architecture: Convolutional decoder with residual blocks
 Input: [B, latent_dim, 32, 32] latent representation
 Output: [B, 3, 256, 256] RGB images
+
+Fixed: Correct upsampling 32 → 64 → 128 → 256 (3 upsample blocks)
 """
 
 import torch
@@ -56,12 +58,17 @@ class Decoder(nn.Module):
     VAE Decoder
     
     Reconstructs 256x256 RGB images from 32x32 latent space.
-    Upsampling: 32 -> 64 -> 128 -> 256 (3 upsample blocks)
+    
+    Architecture (fixed):
+        32x32   -> ResBlock(256) -> Upsample
+        64x64   -> ResBlock(256) -> Upsample  
+        128x128 -> ResBlock(128) -> Upsample
+        256x256 -> ResBlock(64)  -> Output Conv
     
     Args:
         latent_dim: Latent space channels (default: 4)
         out_channels: Output image channels (default: 3 for RGB)
-        hidden_dims: Hidden layer dimensions (reversed from encoder)
+        hidden_dims: Hidden layer dimensions [256, 256, 128, 64]
     """
     
     def __init__(
@@ -72,20 +79,24 @@ class Decoder(nn.Module):
     ):
         super().__init__()
         
+        self.hidden_dims = hidden_dims
+        
         # Initial convolution from latent
         self.conv_in = nn.Conv2d(latent_dim, hidden_dims[0], 3, padding=1)
         
-        # Decoder blocks
-        self.decoder_blocks = nn.ModuleList()
+        # Build decoder blocks
+        # We need 3 upsamples: 32->64->128->256
+        self.res_blocks = nn.ModuleList()
+        self.upsample_blocks = nn.ModuleList()
         
         in_ch = hidden_dims[0]
         for i, out_ch in enumerate(hidden_dims):
             # Residual block
-            self.decoder_blocks.append(ResidualBlock(in_ch, out_ch))
+            self.res_blocks.append(ResidualBlock(in_ch, out_ch))
             
-            # Upsample (except last)
+            # Upsample after first 3 blocks (not the last one)
             if i < len(hidden_dims) - 1:
-                self.decoder_blocks.append(UpsampleBlock(out_ch, out_ch))
+                self.upsample_blocks.append(UpsampleBlock(out_ch, out_ch))
             
             in_ch = out_ch
         
@@ -103,12 +114,14 @@ class Decoder(nn.Module):
         Returns:
             x_recon: [B, 3, 256, 256] reconstructed images
         """
-        # Initial conv
+        # Initial conv: [B, 4, 32, 32] -> [B, 256, 32, 32]
         h = self.conv_in(z)
         
-        # Decoder blocks
-        for block in self.decoder_blocks:
-            h = block(h)
+        # Decoder blocks with upsampling
+        for i, res_block in enumerate(self.res_blocks):
+            h = res_block(h)
+            if i < len(self.upsample_blocks):
+                h = self.upsample_blocks[i](h)
         
         # Final norm + activation + conv
         h = self.norm_out(h)
@@ -137,12 +150,27 @@ if __name__ == '__main__':
     # Forward pass
     x_recon = decoder(z)
     
-    print(f"Latent shape:       {z.shape}")
+    print(f"Latent shape:        {z.shape}")
     print(f"Reconstructed shape: {x_recon.shape}")
     print(f"Output range:        [{x_recon.min():.2f}, {x_recon.max():.2f}]")
     
+    # Verify output size
+    expected_shape = (2, 3, 256, 256)
+    assert x_recon.shape == expected_shape, f"Expected {expected_shape}, got {x_recon.shape}"
+    print(f"\n[OK] Output shape is correct: {expected_shape}")
+    
     # Count parameters
     params = sum(p.numel() for p in decoder.parameters())
-    print(f"\nTotal parameters: {params:,}")
+    print(f"Total parameters: {params:,}")
+    
+    # Show intermediate sizes
+    print("\nArchitecture flow:")
+    print("  Latent:  [B, 4, 32, 32]")
+    print("  Conv_in: [B, 256, 32, 32]")
+    print("  Block 0: [B, 256, 32, 32] -> Upsample -> [B, 256, 64, 64]")
+    print("  Block 1: [B, 256, 64, 64] -> Upsample -> [B, 256, 128, 128]")
+    print("  Block 2: [B, 128, 128, 128] -> Upsample -> [B, 128, 256, 256]")
+    print("  Block 3: [B, 64, 256, 256]")
+    print("  Output:  [B, 3, 256, 256]")
     
     print("\n[OK] Decoder works correctly!")
