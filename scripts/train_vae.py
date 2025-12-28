@@ -260,12 +260,12 @@ class VAETrainer:
         
         for i in range(num_samples):
             # Original
-            axes[0, i].imshow(x[i].permute(1, 2, 0).cpu().numpy())
+            axes[0, i].imshow(x[i].permute(1, 2, 0).cpu().float().numpy())
             axes[0, i].set_title('Original')
             axes[0, i].axis('off')
             
             # Reconstruction
-            axes[1, i].imshow(recon[i].permute(1, 2, 0).cpu().clamp(0, 1).numpy())
+            axes[1, i].imshow(recon[i].permute(1, 2, 0).cpu().clamp(0, 1).float().numpy())
             axes[1, i].set_title('Reconstruction')
             axes[1, i].axis('off')
         
