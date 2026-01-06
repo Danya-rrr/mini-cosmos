@@ -1,21 +1,6 @@
 """
-Mini-Cosmos: Evaluation Metrics Script
-======================================
-Compute metrics to evaluate World Model prediction quality.
-
-Metrics:
-    - SSIM: Structural Similarity Index
-    - PSNR: Peak Signal-to-Noise Ratio
-    - MSE: Mean Squared Error
-    - LPIPS: Learned Perceptual Image Patch Similarity (optional)
-
-Usage:
-    python scripts/evaluate_metrics.py --num_samples 100 --latent_dim 8
-    python scripts/evaluate_metrics.py --num_samples 100 --latent_dim 8 --use_lpips
-
-Requirements:
-    - Trained VAE and World Model checkpoints
-    - pip install lpips (for LPIPS metric)
+Evaluation script for World Model prediction quality.
+Computes SSIM, PSNR, MSE, and optionally LPIPS metrics.
 """
 
 import sys
@@ -30,60 +15,45 @@ from tqdm import tqdm
 import json
 import matplotlib.pyplot as plt
 
-# Local imports
 from src.data.dataset import CARLADataset, DatasetConfig
 from src.models.vae import VAE, VAEConfig
 from src.models.world_model import WorldModel, WorldModelConfig
 
-# Metrics
 from skimage.metrics import structural_similarity as ssim
 from skimage.metrics import peak_signal_noise_ratio as psnr
 
 
-def denormalize(tensor: torch.Tensor) -> torch.Tensor:
-    """Convert from [-1, 1] to [0, 1]"""
+def denormalize(tensor):
     return (tensor + 1) / 2
 
 
-def tensor_to_numpy(tensor: torch.Tensor) -> np.ndarray:
-    """Convert tensor to numpy image [H, W, 3] float [0, 1]"""
+def tensor_to_numpy(tensor):
     img = denormalize(tensor).cpu().clamp(0, 1)
     img = img.permute(1, 2, 0).numpy()
     return img
 
 
-def compute_ssim(pred: np.ndarray, gt: np.ndarray) -> float:
-    """Compute SSIM between two images."""
+def compute_ssim(pred, gt):
     return ssim(pred, gt, channel_axis=2, data_range=1.0)
 
 
-def compute_psnr(pred: np.ndarray, gt: np.ndarray) -> float:
-    """Compute PSNR between two images."""
+def compute_psnr(pred, gt):
     return psnr(gt, pred, data_range=1.0)
 
 
-def compute_mse(pred: np.ndarray, gt: np.ndarray) -> float:
-    """Compute MSE between two images."""
+def compute_mse(pred, gt):
     return np.mean((pred - gt) ** 2)
 
 
 class MetricsEvaluator:
-    """Evaluate World Model predictions with various metrics."""
     
-    def __init__(
-        self,
-        vae: VAE,
-        world_model: WorldModel,
-        device: str = 'cuda',
-        use_lpips: bool = False
-    ):
+    def __init__(self, vae, world_model, device='cuda', use_lpips=False):
         self.vae = vae.to(device)
         self.world_model = world_model.to(device)
         self.vae.eval()
         self.world_model.eval()
         self.device = device
         
-        # LPIPS (optional)
         self.lpips_fn = None
         if use_lpips:
             try:
@@ -95,8 +65,7 @@ class MetricsEvaluator:
                 print("LPIPS not installed. Run: pip install lpips")
     
     @torch.no_grad()
-    def encode_frames(self, frames: torch.Tensor) -> torch.Tensor:
-        """Encode RGB frames to latent."""
+    def encode_frames(self, frames):
         B, T = frames.shape[:2]
         frames_flat = frames.view(B * T, *frames.shape[2:])
         latents = self.vae.get_latent(frames_flat, deterministic=True)
@@ -104,21 +73,17 @@ class MetricsEvaluator:
         return latents
     
     @torch.no_grad()
-    def decode_latent(self, latent: torch.Tensor) -> torch.Tensor:
-        """Decode latent to RGB frame."""
+    def decode_latent(self, latent):
         return self.vae.decode(latent)
     
     @torch.no_grad()
-    def compute_lpips(self, pred: torch.Tensor, gt: torch.Tensor) -> float:
-        """Compute LPIPS between two images."""
+    def compute_lpips(self, pred, gt):
         if self.lpips_fn is None:
             return 0.0
         
-        # LPIPS expects [-1, 1] range
         pred_norm = pred * 2 - 1
         gt_norm = gt * 2 - 1
         
-        # Add batch dimension if needed
         if pred_norm.dim() == 3:
             pred_norm = pred_norm.unsqueeze(0)
             gt_norm = gt_norm.unsqueeze(0)
@@ -126,20 +91,11 @@ class MetricsEvaluator:
         return self.lpips_fn(pred_norm, gt_norm).item()
     
     @torch.no_grad()
-    def predict_future(
-        self,
-        context_frames: torch.Tensor,
-        context_actions: torch.Tensor = None,
-        future_actions: torch.Tensor = None,
-        num_future: int = 8
-    ) -> torch.Tensor:
-        """Generate future frame predictions."""
+    def predict_future(self, context_frames, context_actions=None, 
+                       future_actions=None, num_future=8):
         context_length = self.world_model.config.context_length
-        
-        # Encode context
         context_latents = self.encode_frames(context_frames)
         
-        # Generate autoregressively
         current_latents = context_latents.clone()
         predicted_frames = []
         
@@ -166,30 +122,16 @@ class MetricsEvaluator:
         
         return torch.stack(predicted_frames)
     
-    def evaluate_sample(
-        self,
-        context_frames: torch.Tensor,
-        gt_future_frames: torch.Tensor,
-        context_actions: torch.Tensor = None,
-        future_actions: torch.Tensor = None
-    ) -> dict:
-        """Evaluate metrics for a single sample."""
+    def evaluate_sample(self, context_frames, gt_future_frames,
+                        context_actions=None, future_actions=None):
         num_future = gt_future_frames.shape[1]
         
-        # Predict
         predicted_frames = self.predict_future(
-            context_frames,
-            context_actions,
-            future_actions,
-            num_future=num_future
+            context_frames, context_actions, future_actions, num_future=num_future
         )
         
-        # Compute metrics per timestep
         metrics_per_step = {
-            'ssim': [],
-            'psnr': [],
-            'mse': [],
-            'lpips': []
+            'ssim': [], 'psnr': [], 'mse': [], 'lpips': []
         }
         
         for t in range(num_future):
@@ -208,16 +150,7 @@ class MetricsEvaluator:
         return metrics_per_step
 
 
-def evaluate_model(
-    evaluator: MetricsEvaluator,
-    dataset: CARLADataset,
-    num_samples: int,
-    num_future: int,
-    context_length: int,
-    device: str
-) -> dict:
-    """Evaluate model on multiple samples."""
-    
+def evaluate_model(evaluator, dataset, num_samples, num_future, context_length, device):
     all_metrics = {
         'ssim': [[] for _ in range(num_future)],
         'psnr': [[] for _ in range(num_future)],
@@ -248,10 +181,7 @@ def evaluate_model(
             future_actions = None
         
         metrics = evaluator.evaluate_sample(
-            context_frames,
-            gt_future_frames,
-            context_actions,
-            future_actions
+            context_frames, gt_future_frames, context_actions, future_actions
         )
         
         for t in range(num_future):
@@ -261,11 +191,7 @@ def evaluate_model(
             if metrics['lpips']:
                 all_metrics['lpips'][t].append(metrics['lpips'][t])
     
-    # Compute statistics
-    results = {
-        'per_timestep': {},
-        'average': {}
-    }
+    results = {'per_timestep': {}, 'average': {}}
     
     for metric_name in ['ssim', 'psnr', 'mse', 'lpips']:
         if not all_metrics[metric_name][0]:
@@ -274,22 +200,13 @@ def evaluate_model(
         means = [np.mean(all_metrics[metric_name][t]) for t in range(num_future)]
         stds = [np.std(all_metrics[metric_name][t]) for t in range(num_future)]
         
-        results['per_timestep'][metric_name] = {
-            'mean': means,
-            'std': stds
-        }
-        
-        results['average'][metric_name] = {
-            'mean': np.mean(means),
-            'std': np.mean(stds)
-        }
+        results['per_timestep'][metric_name] = {'mean': means, 'std': stds}
+        results['average'][metric_name] = {'mean': np.mean(means), 'std': np.mean(stds)}
     
     return results
 
 
-def plot_metrics(results: dict, output_dir: Path):
-    """Plot metrics over prediction horizon."""
-    
+def plot_metrics(results, output_dir):
     metrics_to_plot = ['ssim', 'psnr', 'mse']
     if 'lpips' in results['per_timestep']:
         metrics_to_plot.append('lpips')
@@ -317,32 +234,29 @@ def plot_metrics(results: dict, output_dir: Path):
         ax.set_title(f'{metric_name.upper()} vs Prediction Horizon')
         ax.grid(True, alpha=0.3)
         
-        # Add average line
         avg = results['average'][metric_name]['mean']
         ax.axhline(y=avg, color='r', linestyle='--', alpha=0.5, label=f'Avg: {avg:.4f}')
         ax.legend()
     
     plt.tight_layout()
-    
     save_path = output_dir / 'metrics_plot.png'
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
     print(f"Saved plot: {save_path}")
 
 
-def print_results(results: dict):
-    """Print results in a nice format."""
+def print_results(results):
     print("\n" + "=" * 60)
     print("EVALUATION RESULTS")
     print("=" * 60)
     
-    print("\n📊 Average Metrics:")
+    print("\nAverage Metrics:")
     print("-" * 40)
     
     for metric_name, values in results['average'].items():
-        print(f"  {metric_name.upper():8s}: {values['mean']:.4f} ± {values['std']:.4f}")
+        print(f"  {metric_name.upper():8s}: {values['mean']:.4f} +/- {values['std']:.4f}")
     
-    print("\n📈 Metrics by Prediction Horizon:")
+    print("\nMetrics by Prediction Horizon:")
     print("-" * 40)
     
     for metric_name in results['per_timestep']:
@@ -358,43 +272,32 @@ def print_results(results: dict):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Evaluate World Model predictions')
+    parser = argparse.ArgumentParser(description='Evaluate World Model')
     
-    # Model
     parser.add_argument('--latent_dim', type=int, default=4)
     parser.add_argument('--context_length', type=int, default=8)
     parser.add_argument('--hidden_dim', type=int, default=512)
     parser.add_argument('--num_layers', type=int, default=6)
     parser.add_argument('--num_heads', type=int, default=8)
     
-    # Evaluation
-    parser.add_argument('--num_samples', type=int, default=100,
-                        help='Number of samples to evaluate')
-    parser.add_argument('--num_future', type=int, default=16,
-                        help='Number of future frames to predict')
-    parser.add_argument('--use_lpips', action='store_true',
-                        help='Use LPIPS metric (requires pip install lpips)')
+    parser.add_argument('--num_samples', type=int, default=100)
+    parser.add_argument('--num_future', type=int, default=16)
+    parser.add_argument('--use_lpips', action='store_true')
     
-    # Paths
-    parser.add_argument('--vae_checkpoint', type=str,
-                        default='./outputs/checkpoints/vae_best.pt')
-    parser.add_argument('--world_model_checkpoint', type=str,
-                        default='./outputs/checkpoints/world_model_best.pt')
+    parser.add_argument('--vae_checkpoint', type=str, default='./outputs/checkpoints/vae_best.pt')
+    parser.add_argument('--world_model_checkpoint', type=str, default='./outputs/checkpoints/world_model_best.pt')
     parser.add_argument('--data_dir', type=str, default='./data/raw')
     parser.add_argument('--output_dir', type=str, default='./outputs/metrics')
-    
     parser.add_argument('--seed', type=int, default=42)
     
     args = parser.parse_args()
     
-    # Set seed
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"Using device: {device}")
     
-    # Check checkpoints
     vae_path = Path(args.vae_checkpoint)
     wm_path = Path(args.world_model_checkpoint)
     
@@ -406,7 +309,6 @@ def main():
         print(f"[ERROR] World Model checkpoint not found: {wm_path}")
         return
     
-    # Load VAE
     print("Loading VAE...")
     vae_checkpoint = torch.load(vae_path, map_location=device, weights_only=False)
     vae_config = VAEConfig(
@@ -418,7 +320,6 @@ def main():
     vae.load_state_dict(vae_checkpoint['model_state_dict'])
     print(f"  Loaded from epoch {vae_checkpoint['epoch']}")
     
-    # Load World Model
     print("Loading World Model...")
     wm_checkpoint = torch.load(wm_path, map_location=device, weights_only=False)
     wm_config = WorldModelConfig(
@@ -437,10 +338,8 @@ def main():
     world_model.load_state_dict(wm_checkpoint['model_state_dict'])
     print(f"  Loaded from epoch {wm_checkpoint['epoch']}")
     
-    # Create evaluator
     evaluator = MetricsEvaluator(vae, world_model, device, use_lpips=args.use_lpips)
     
-    # Load dataset
     print("Loading dataset...")
     total_frames_needed = args.context_length + args.num_future
     dataset_config = DatasetConfig(
@@ -458,25 +357,20 @@ def main():
     
     print(f"  Dataset size: {len(dataset)}")
     
-    # Create output directory
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Evaluate
     print(f"\nEvaluating on {args.num_samples} samples...")
     results = evaluate_model(
-        evaluator,
-        dataset,
+        evaluator, dataset,
         num_samples=args.num_samples,
         num_future=args.num_future,
         context_length=args.context_length,
         device=device
     )
     
-    # Print results
     print_results(results)
     
-    # Save results (convert numpy types to Python types for JSON)
     def convert_to_python(obj):
         if isinstance(obj, dict):
             return {k: convert_to_python(v) for k, v in obj.items()}
@@ -494,9 +388,7 @@ def main():
         json.dump(convert_to_python(results), f, indent=2)
     print(f"\nSaved results: {results_path}")
     
-    # Plot
     plot_metrics(results, output_dir)
-    
     print("\n[OK] Evaluation complete!")
 
 

@@ -1,15 +1,7 @@
 #!/usr/bin/env python3
 """
-Mini-Cosmos: CARLA Data Collection Script
-=========================================
-Collects driving data from CARLA simulator with:
-- Ego vehicle with autopilot
-- NPC vehicles and pedestrians
-- RGB camera recording
-- Metadata (position, velocity, actions)
-
-Usage:
-    python scripts/collect_data.py --episodes 10 --frames 500
+CARLA data collection script for Mini-Cosmos world model training.
+Collects RGB frames and vehicle telemetry from urban driving scenarios.
 """
 
 import carla
@@ -23,12 +15,10 @@ import numpy as np
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, asdict
-from typing import List, Optional, Tuple
 
 
 @dataclass
 class EpisodeConfig:
-    """Episode configuration"""
     num_vehicles: int = 30
     num_pedestrians: int = 20
     frames_per_episode: int = 500
@@ -41,12 +31,11 @@ class EpisodeConfig:
 
 @dataclass
 class FrameData:
-    """Single frame metadata"""
     frame_id: int
     timestamp: float
-    ego_location: Tuple[float, float, float]
-    ego_rotation: Tuple[float, float, float]
-    ego_velocity: Tuple[float, float, float]
+    ego_location: tuple
+    ego_rotation: tuple
+    ego_velocity: tuple
     control_throttle: float
     control_steer: float
     control_brake: float
@@ -56,15 +45,6 @@ class FrameData:
 
 
 class CARLADataCollector:
-    """
-    Main class for collecting data from CARLA.
-    
-    Creates diverse urban scenes with:
-    - Ego vehicle with autopilot
-    - NPC vehicles (also with autopilot)
-    - Pedestrians with AI controller
-    - Various weather conditions
-    """
     
     WEATHER_PRESETS = [
         carla.WeatherParameters.ClearNoon,
@@ -80,40 +60,29 @@ class CARLADataCollector:
         "SoftRainNoon", "ClearSunset", "CloudySunset"
     ]
     
-    def __init__(
-        self,
-        host: str = 'localhost',
-        port: int = 2000,
-        output_dir: str = './data/raw',
-        config: Optional[EpisodeConfig] = None
-    ):
+    def __init__(self, host='localhost', port=2000, output_dir='./data/raw', config=None):
         self.host = host
         self.port = port
         self.output_dir = Path(output_dir)
         self.config = config or EpisodeConfig()
         
-        # CARLA objects
         self.client = None
         self.world = None
         self.blueprint_library = None
         self.traffic_manager = None
         
-        # Actors
         self.ego_vehicle = None
         self.camera = None
         self.npc_vehicles = []
         self.pedestrians = []
         self.pedestrian_controllers = []
         
-        # Data
         self.image_queue = queue.Queue()
         self.current_weather_idx = 0
         
-        # Create output directory
         self.output_dir.mkdir(parents=True, exist_ok=True)
     
-    def connect(self) -> bool:
-        """Connect to CARLA server"""
+    def connect(self):
         try:
             print(f"Connecting to CARLA at {self.host}:{self.port}...")
             self.client = carla.Client(self.host, self.port)
@@ -122,12 +91,10 @@ class CARLADataCollector:
             self.world = self.client.get_world()
             self.blueprint_library = self.world.get_blueprint_library()
             
-            # Setup Traffic Manager
             self.traffic_manager = self.client.get_trafficmanager(8000)
             self.traffic_manager.set_global_distance_to_leading_vehicle(2.5)
             self.traffic_manager.set_synchronous_mode(True)
             
-            # Synchronous mode for stable FPS
             settings = self.world.get_settings()
             settings.synchronous_mode = True
             settings.fixed_delta_seconds = 1.0 / self.config.fps
@@ -140,22 +107,15 @@ class CARLADataCollector:
             print(f"[ERROR] Connection failed: {e}")
             return False
     
-    def spawn_ego_vehicle(self) -> bool:
-        """Spawn main vehicle with camera"""
+    def spawn_ego_vehicle(self):
         try:
-            # Choose vehicle (Tesla Model 3)
             vehicle_bp = self.blueprint_library.filter('vehicle.tesla.model3')[0]
-            
-            # Random spawn point
             spawn_points = self.world.get_map().get_spawn_points()
             spawn_point = random.choice(spawn_points)
             
             self.ego_vehicle = self.world.spawn_actor(vehicle_bp, spawn_point)
-            
-            # Enable autopilot
             self.ego_vehicle.set_autopilot(True, self.traffic_manager.get_port())
             
-            # Autopilot settings
             self.traffic_manager.ignore_lights_percentage(self.ego_vehicle, 0)
             self.traffic_manager.distance_to_leading_vehicle(self.ego_vehicle, 2.0)
             self.traffic_manager.vehicle_percentage_speed_difference(self.ego_vehicle, -10)
@@ -167,29 +127,21 @@ class CARLADataCollector:
             print(f"[ERROR] Failed to spawn ego vehicle: {e}")
             return False
     
-    def attach_camera(self) -> bool:
-        """Attach RGB camera to ego vehicle"""
+    def attach_camera(self):
         try:
             camera_bp = self.blueprint_library.find('sensor.camera.rgb')
-            
-            # Camera settings
             camera_bp.set_attribute('image_size_x', str(self.config.image_width))
             camera_bp.set_attribute('image_size_y', str(self.config.image_height))
             camera_bp.set_attribute('fov', str(self.config.fov))
             
-            # Camera position (on hood, forward view)
             camera_transform = carla.Transform(
                 carla.Location(x=2.0, z=1.4),
                 carla.Rotation(pitch=-5)
             )
             
             self.camera = self.world.spawn_actor(
-                camera_bp,
-                camera_transform,
-                attach_to=self.ego_vehicle
+                camera_bp, camera_transform, attach_to=self.ego_vehicle
             )
-            
-            # Callback for saving images
             self.camera.listen(lambda image: self.image_queue.put(image))
             
             print(f"[OK] Camera attached ({self.config.image_width}x{self.config.image_height})")
@@ -199,12 +151,10 @@ class CARLADataCollector:
             print(f"[ERROR] Failed to attach camera: {e}")
             return False
     
-    def spawn_npc_vehicles(self) -> int:
-        """Spawn NPC vehicles with autopilot"""
+    def spawn_npc_vehicles(self):
         spawn_points = self.world.get_map().get_spawn_points()
         random.shuffle(spawn_points)
         
-        # Filter only cars (4 wheels)
         vehicle_bps = [
             bp for bp in self.blueprint_library.filter('vehicle.*')
             if int(bp.get_attribute('number_of_wheels')) == 4
@@ -214,35 +164,28 @@ class CARLADataCollector:
         for spawn_point in spawn_points[:self.config.num_vehicles]:
             try:
                 bp = random.choice(vehicle_bps)
-                
-                # Random color
                 if bp.has_attribute('color'):
                     color = random.choice(bp.get_attribute('color').recommended_values)
                     bp.set_attribute('color', color)
                 
                 vehicle = self.world.spawn_actor(bp, spawn_point)
                 vehicle.set_autopilot(True, self.traffic_manager.get_port())
-                
-                # Behavior variety
                 self.traffic_manager.vehicle_percentage_speed_difference(
                     vehicle, random.uniform(-20, 20)
                 )
                 
                 self.npc_vehicles.append(vehicle)
                 spawned += 1
-                
             except Exception:
                 continue
         
         print(f"[OK] NPC vehicles: {spawned}/{self.config.num_vehicles}")
         return spawned
     
-    def spawn_pedestrians(self) -> int:
-        """Spawn pedestrians with AI controller"""
+    def spawn_pedestrians(self):
         walker_bps = self.blueprint_library.filter('walker.pedestrian.*')
         controller_bp = self.blueprint_library.find('controller.ai.walker')
         
-        # Get random spawn locations on sidewalks
         spawn_locations = []
         for _ in range(self.config.num_pedestrians * 2):
             loc = self.world.get_random_location_from_navigation()
@@ -253,27 +196,20 @@ class CARLADataCollector:
         for spawn_loc in spawn_locations[:self.config.num_pedestrians]:
             try:
                 walker_bp = random.choice(walker_bps)
-                
                 if walker_bp.has_attribute('is_invincible'):
                     walker_bp.set_attribute('is_invincible', 'false')
                 
                 walker = self.world.spawn_actor(walker_bp, spawn_loc)
                 self.pedestrians.append(walker)
                 
-                # AI controller
                 controller = self.world.spawn_actor(
-                    controller_bp,
-                    carla.Transform(),
-                    attach_to=walker
+                    controller_bp, carla.Transform(), attach_to=walker
                 )
                 self.pedestrian_controllers.append(controller)
-                
                 spawned += 1
-                
             except Exception:
                 continue
         
-        # Start controllers
         self.world.tick()
         
         for controller in self.pedestrian_controllers:
@@ -289,8 +225,7 @@ class CARLADataCollector:
         print(f"[OK] Pedestrians: {spawned}/{self.config.num_pedestrians}")
         return spawned
     
-    def set_weather(self, weather_idx: Optional[int] = None):
-        """Set weather"""
+    def set_weather(self, weather_idx=None):
         if weather_idx is None:
             weather_idx = random.randint(0, len(self.WEATHER_PRESETS) - 1)
         
@@ -298,13 +233,11 @@ class CARLADataCollector:
         self.world.set_weather(self.WEATHER_PRESETS[weather_idx])
         print(f"[OK] Weather: {self.WEATHER_NAMES[weather_idx]}")
     
-    def get_frame_data(self, frame_id: int) -> FrameData:
-        """Collect current frame metadata"""
+    def get_frame_data(self, frame_id):
         transform = self.ego_vehicle.get_transform()
         velocity = self.ego_vehicle.get_velocity()
         control = self.ego_vehicle.get_control()
         
-        # Count visible objects (within 50m)
         ego_loc = transform.location
         visible_vehicles = sum(
             1 for v in self.npc_vehicles
@@ -329,8 +262,7 @@ class CARLADataCollector:
             weather=self.WEATHER_NAMES[self.current_weather_idx]
         )
     
-    def collect_episode(self, episode_id: int) -> bool:
-        """Collect single episode"""
+    def collect_episode(self, episode_id):
         episode_dir = self.output_dir / f"episode_{episode_id:04d}"
         images_dir = episode_dir / "images"
         images_dir.mkdir(parents=True, exist_ok=True)
@@ -346,15 +278,13 @@ class CARLADataCollector:
         print(f"Episode {episode_id}: Collecting {self.config.frames_per_episode} frames...")
         print(f"{'='*50}")
         
-        # Change weather
         if self.config.weather_change:
             self.set_weather()
         
-        # Warmup
+        # Warmup period
         for _ in range(30):
             self.world.tick()
         
-        # Clear image queue
         while not self.image_queue.empty():
             self.image_queue.get()
         
@@ -363,27 +293,22 @@ class CARLADataCollector:
         
         for frame_id in range(self.config.frames_per_episode):
             try:
-                # Simulation step
                 self.world.tick()
                 
-                # Get image
                 try:
                     image = self.image_queue.get(timeout=2.0)
                 except queue.Empty:
                     print(f"  Skip frame {frame_id}: timeout")
                     continue
                 
-                # Save image
                 image_path = images_dir / f"frame_{frame_id:05d}.png"
                 image.save_to_disk(str(image_path))
                 
-                # Collect metadata
                 frame_data = self.get_frame_data(frame_id)
                 metadata['frames'].append(asdict(frame_data))
                 
                 collected_frames += 1
                 
-                # Progress
                 if (frame_id + 1) % 100 == 0:
                     elapsed = time.time() - start_time
                     fps_actual = collected_frames / elapsed
@@ -393,7 +318,6 @@ class CARLADataCollector:
                 print(f"  Error at frame {frame_id}: {e}")
                 continue
         
-        # Save metadata
         metadata['end_time'] = datetime.now().isoformat()
         metadata['total_frames'] = collected_frames
         metadata['duration_seconds'] = time.time() - start_time
@@ -406,17 +330,14 @@ class CARLADataCollector:
         return True
     
     def cleanup_actors(self):
-        """Remove all spawned actors"""
         print("Cleaning up actors...")
         
-        # Stop pedestrian controllers
         for controller in self.pedestrian_controllers:
             try:
                 controller.stop()
             except Exception:
                 pass
         
-        # Destroy actors
         actors_to_destroy = (
             [self.camera, self.ego_vehicle] +
             self.npc_vehicles +
@@ -431,7 +352,6 @@ class CARLADataCollector:
                 except Exception:
                     pass
         
-        # Clear lists
         self.camera = None
         self.ego_vehicle = None
         self.npc_vehicles = []
@@ -441,18 +361,14 @@ class CARLADataCollector:
         print("[OK] Actors cleaned up")
     
     def reset_world(self):
-        """Reset world for new episode"""
         self.cleanup_actors()
         time.sleep(1.0)
-        
-        # Respawn actors
         self.spawn_ego_vehicle()
         self.attach_camera()
         self.spawn_npc_vehicles()
         self.spawn_pedestrians()
     
-    def collect_dataset(self, num_episodes: int):
-        """Collect full dataset"""
+    def collect_dataset(self, num_episodes):
         print(f"\n{'#'*60}")
         print(f"Mini-Cosmos: CARLA Data Collection")
         print(f"{'#'*60}")
@@ -465,7 +381,6 @@ class CARLADataCollector:
         if not self.connect():
             return
         
-        # Initial setup
         self.spawn_ego_vehicle()
         self.attach_camera()
         self.spawn_npc_vehicles()
@@ -474,8 +389,6 @@ class CARLADataCollector:
         try:
             for episode_id in range(num_episodes):
                 self.collect_episode(episode_id)
-                
-                # Reset for next episode
                 if episode_id < num_episodes - 1:
                     self.reset_world()
                     
@@ -483,8 +396,6 @@ class CARLADataCollector:
             print("\n\n[!] Interrupted by user")
         finally:
             self.cleanup_actors()
-            
-            # Restore async mode
             settings = self.world.get_settings()
             settings.synchronous_mode = False
             self.world.apply_settings(settings)
@@ -493,7 +404,6 @@ class CARLADataCollector:
         self._print_dataset_stats()
     
     def _print_dataset_stats(self):
-        """Print dataset statistics"""
         total_frames = 0
         total_size = 0
         
@@ -515,39 +425,21 @@ class CARLADataCollector:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Mini-Cosmos: CARLA Data Collection')
+    parser = argparse.ArgumentParser(description='CARLA Data Collection')
     
-    # Main parameters
-    parser.add_argument('--episodes', type=int, default=10,
-                        help='Number of episodes (default: 10)')
-    parser.add_argument('--frames', type=int, default=500,
-                        help='Frames per episode (default: 500)')
-    parser.add_argument('--output', type=str, default='./data/raw',
-                        help='Output directory')
-    
-    # Scene parameters
-    parser.add_argument('--vehicles', type=int, default=30,
-                        help='Number of NPC vehicles (default: 30)')
-    parser.add_argument('--pedestrians', type=int, default=20,
-                        help='Number of pedestrians (default: 20)')
-    
-    # Image parameters
-    parser.add_argument('--width', type=int, default=256,
-                        help='Image width (default: 256)')
-    parser.add_argument('--height', type=int, default=256,
-                        help='Image height (default: 256)')
-    parser.add_argument('--fps', type=int, default=10,
-                        help='Frames per second (default: 10)')
-    
-    # CARLA connection
-    parser.add_argument('--host', type=str, default='localhost',
-                        help='CARLA host (default: localhost)')
-    parser.add_argument('--port', type=int, default=2000,
-                        help='CARLA port (default: 2000)')
+    parser.add_argument('--episodes', type=int, default=10)
+    parser.add_argument('--frames', type=int, default=500)
+    parser.add_argument('--output', type=str, default='./data/raw')
+    parser.add_argument('--vehicles', type=int, default=30)
+    parser.add_argument('--pedestrians', type=int, default=20)
+    parser.add_argument('--width', type=int, default=256)
+    parser.add_argument('--height', type=int, default=256)
+    parser.add_argument('--fps', type=int, default=10)
+    parser.add_argument('--host', type=str, default='localhost')
+    parser.add_argument('--port', type=int, default=2000)
     
     args = parser.parse_args()
     
-    # Configuration
     config = EpisodeConfig(
         num_vehicles=args.vehicles,
         num_pedestrians=args.pedestrians,
@@ -557,7 +449,6 @@ def main():
         fps=args.fps
     )
     
-    # Start collection
     collector = CARLADataCollector(
         host=args.host,
         port=args.port,
